@@ -1,5 +1,5 @@
 import json, os, re, cloudscraper, requests, unicodedata
-from urllib.parse import urlparse, quote
+from urllib.parse import urljoin, urlparse, quote
 from concurrent.futures import ThreadPoolExecutor
 from rapidfuzz import process, fuzz
 from bs4 import BeautifulSoup
@@ -690,30 +690,40 @@ class Cardinal:
                 return []
 
         soup = BeautifulSoup(second.text, 'html.parser')
-        
+
         script_tag = soup.find("script", src=lambda s: s and "episodes.js" in s)
-        if not script_tag:
-            return []
+        episode_token = None
+        if script_tag:
+            src = script_tag.get("src", "")
+            js_link = src.split('"')[0].split("'")[0]
 
-        src = script_tag.get("src", "")
-        js_link = src.split('"')[0].split("'")[0]
+            if js_link.startswith("http://") or js_link.startswith("https://"):
+                jsfile = js_link
+            elif js_link.startswith("/"):
+                parsed_link = urlparse(link)
+                jsfile = f"{parsed_link.scheme}://{parsed_link.netloc}{js_link}"
+            else:
+                jsfile = f"{link.rstrip('/')}/{js_link.lstrip('/')}"
 
-        if js_link.startswith("http://") or js_link.startswith("https://"):
-            jsfile = js_link
-        elif js_link.startswith("/"):
-            parsed_link = urlparse(link)
-            jsfile = f"{parsed_link.scheme}://{parsed_link.netloc}{js_link}"
+            js_text = scraper.get(jsfile, headers={**headers, "Referer": link}, timeout=15).text
+            matches = re.findall(r"(?:var|let|const)\s+(eps\w+)\s*=\s*\[(.*?)\];", js_text, re.DOTALL)
+            all_eps = {
+                name: re.findall(r"""['"]((?:https?://|lien:)[^'"]+)['"]""", content)
+                for name, content in matches
+            }
         else:
-            jsfile = f"{link.rstrip('/')}/{js_link.lstrip('/')}"
+            data_script = soup.find("script", attrs={"data-source": "bdd"})
+            if not data_script:
+                return []
 
-        js_text = scraper.get(jsfile, headers={**headers, "Referer": link}).text
-        # Supporte eps1, eps2... ainsi que epsAS ou autres variantes de lecteurs
-        matches = re.findall(r"var\s+(eps\w+)\s*=\s*\[(.*?)\];", js_text, re.DOTALL)
-
-        all_eps = {
-            name: re.findall(r'''['"](https?://[^'"]+)['"]''', content)
-            for name, content in matches
-        }
+            js_text = data_script.string or data_script.get_text()
+            token_match = re.search(r"""(?:var|let|const)\s+epsJeton\s*=\s*['"]([^'"]+)['"]""", js_text)
+            episode_token = token_match.group(1) if token_match else None
+            matches = re.findall(r"(?:var|let|const)\s+(eps\w+)\s*=\s*\[(.*?)\];", js_text, re.DOTALL)
+            all_eps = {
+                name: re.findall(r"""['"]((?:https?://|lien:)[^'"]+)['"]""", content)
+                for name, content in matches
+            }
 
         if not all_eps:
             return []
@@ -753,6 +763,36 @@ class Cardinal:
                     continue
 
                 url_to_test = eps_list[ep_idx].strip(" \t\n\r\xa0")
+                if url_to_test.startswith("lien:"):
+                    if not episode_token:
+                        continue
+                    try:
+                        link_response = scraper.get(
+                            urljoin(link, "/api/lien.php"),
+                            params={"j": episode_token, "l": url_to_test[5:]},
+                            headers={
+                                **headers,
+                                "Accept": "application/json",
+                                "Referer": link,
+                            },
+                            timeout=15,
+                        )
+                        link_response.raise_for_status()
+                        link_data = link_response.json()
+                    except (requests.RequestException, ValueError) as error:
+                        print(
+                            f"AnimeSama link resolver failed for episode {ep_idx + 1} "
+                            f"({type(error).__name__})."
+                        )
+                        continue
+
+                    resolved_reference = link_data.get("u") if isinstance(link_data, dict) else None
+                    if not isinstance(resolved_reference, str) or not resolved_reference.strip():
+                        continue
+                    url_to_test = urljoin(link, resolved_reference.strip())
+                    if urlparse(url_to_test).scheme not in ("http", "https"):
+                        continue
+
                 if not url_to_test or "sibnet.ru" in url_to_test.lower():
                     if url_to_test and not fallback_url:
                         fallback_url = url_to_test

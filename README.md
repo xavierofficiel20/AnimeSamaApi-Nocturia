@@ -305,6 +305,7 @@ Récupère tous les liens de streaming pour une saison complète.
 - `n` (obligatoire) : Nom de l'anime
 - `s` (optionnel) : Saison (défaut : `saison1`)
 - `v` (optionnel) : Version (défaut : `vostfr`)
+- `e` (optionnel) : Numéro d'épisode (commence à 1); lorsqu'il est défini, l'API renvoie uniquement cet épisode.
 
 **Exemple** :
 ```
@@ -315,17 +316,19 @@ http://127.0.0.1:5000/api/getAnimeLink?n=Spy%20x%20Family&s=saison1&v=vostfr
 ```json
 [
   {
-    "episode": 0,
+    "episode": 1,
     "url": "https://..."
   },
   {
-    "episode": 1,
+    "episode": 2,
     "url": "https://..."
   }
 ]
 ```
 
-**Note** : Cette fonction tente plusieurs lecteurs et sources pour garantir la disponibilité de tous les épisodes.
+Avec `e=1`, la réponse est un seul objet, par exemple `{"episode": 1, "url": "https://..."}`.
+
+**Note** : L'extraction prend en charge les anciens liens intégrés dans `episodes.js` et les références `lien:<id>` émises dans les données de page récentes. Ces références sont résolues via `/api/lien.php` avec le jeton temporaire fourni dans la page.
 
 ### 8. Recuperation du lien actif de anime-sama
 
