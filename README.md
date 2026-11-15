@@ -339,6 +339,8 @@ http://127.0.0.1:5000/api/getAnimeLink?n=Spy%20x%20Family&s=saison1&v=vostfr
 
 Avec `e=1`, la réponse est un seul objet de même structure. `url`, `type` et `server` désignent l'option prioritaire; `streams` contient les lecteurs disponibles pour l'épisode. Les types directs sont `m3u8` ou `mp4`; les pages de lecteur sont `embed`.
 
+Le relais `/api/proxy` est utilisé pour les manifestes HLS et leurs segments lorsque le fournisseur refuse les requêtes directes du navigateur. Les en-têtes CORS sont ajoutés une seule fois par Flask-CORS; ne pas les dupliquer dans les réponses du relais, car les navigateurs rejettent plusieurs valeurs `Access-Control-Allow-Origin`.
+
 **Note** : L'extraction prend en charge les anciens liens intégrés dans `episodes.js` et les références `lien:<id>` émises dans les données de page récentes. Ces références sont résolues via `/api/lien.php` avec le jeton temporaire fourni dans la page.
 
 ### 8. Liste des épisodes d'une saison

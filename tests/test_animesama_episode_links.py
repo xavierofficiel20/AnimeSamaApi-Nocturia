@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.utils import utils
 
@@ -44,6 +44,21 @@ class FakeScraper:
 
 
 class AnimeSamaEpisodeLinksTests(unittest.TestCase):
+    def test_stream_proxy_returns_one_cors_origin_header(self):
+        upstream = Mock()
+        upstream.status_code = 200
+        upstream.raw.headers.items.return_value = [("Content-Type", "video/MP2T")]
+        upstream.iter_content.return_value = iter([b"mpeg-ts-segment"])
+        with patch.object(api.requests, "get", return_value=upstream):
+            response = api.app.test_client().get(
+                "/api/proxy?url=https%3A%2F%2Fvideo.example%2Fsegment.ts",
+                headers={"Origin": "http://localhost:5173"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.getlist("Access-Control-Allow-Origin"), ["http://localhost:5173"])
+        self.assertEqual(response.data, b"mpeg-ts-segment")
+
     def test_episode_list_route_returns_episode_data(self):
         episodes = [{"episode": 1, "title": "Episode 1"}]
         with patch.object(backend.Cardinal, "getAnimeEpisodes", return_value=episodes) as get_episodes:

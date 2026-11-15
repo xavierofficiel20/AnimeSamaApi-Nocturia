@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request, Response
+from flask_cors import CORS
 import requests
 
 try:
@@ -12,6 +13,7 @@ except ImportError:
 # Initialisation propre de l'application Flask en dehors d'une classe pour éviter les erreurs de scope (@app.route)
 app = Flask(__name__)
 app.json.ensure_ascii = False
+CORS(app)
 
 @app.route('/', methods=["GET"])
 def home():
@@ -143,17 +145,13 @@ def proxy_hls():
             return Response(
                 new_content, 
                 status=resp.status_code, 
-                content_type='application/vnd.apple.mpegurl', 
-                headers={'Access-Control-Allow-Origin': '*'}
+                content_type='application/vnd.apple.mpegurl'
             )
 
         excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for (name, value) in resp.raw.headers.items()
                             if name.lower() not in excluded_headers]
         
-        response_headers.append(('Access-Control-Allow-Origin', '*'))
-        response_headers.append(('Access-Control-Allow-Headers', '*'))
-
         return Response(resp.iter_content(chunk_size=1024), status=resp.status_code, headers=response_headers)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
