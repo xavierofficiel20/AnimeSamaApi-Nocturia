@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import quote
 
 from src.utils import utils
 
@@ -47,7 +48,10 @@ class AnimeSamaEpisodeLinksTests(unittest.TestCase):
     def test_stream_proxy_returns_one_cors_origin_header(self):
         upstream = Mock()
         upstream.status_code = 200
-        upstream.raw.headers.items.return_value = [("Content-Type", "video/MP2T")]
+        upstream.raw.headers.items.return_value = [
+            ("Content-Type", "video/MP2T"),
+            ("Access-Control-Allow-Origin", "*"),
+        ]
         upstream.iter_content.return_value = iter([b"mpeg-ts-segment"])
         with patch.object(api.requests, "get", return_value=upstream):
             response = api.app.test_client().get(
@@ -58,6 +62,69 @@ class AnimeSamaEpisodeLinksTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.getlist("Access-Control-Allow-Origin"), ["http://localhost:5173"])
         self.assertEqual(response.data, b"mpeg-ts-segment")
+
+    def test_audio_compatibility_mode_transcodes_allowed_hls_segments(self):
+        upstream = Mock()
+        upstream.status_code = 200
+        upstream.url = "https://prx-1476-ant.vmpx.online/hls/segment.ts"
+        upstream.headers = {"Content-Type": "video/MP2T"}
+        upstream.raw.headers.items.return_value = [("Content-Type", "video/MP2T")]
+        upstream.content = b"original-segment"
+        converted = b"\x47converted-segment"
+        target = "https://prx-1476-ant.vmpx.online/hls/segment.ts?token=temporary"
+        with (
+            patch.object(api.requests, "get", return_value=upstream),
+            patch.object(api, "_transcode_segment_audio_to_aac", return_value=converted) as transcode,
+        ):
+            response = api.app.test_client().get(
+                f"/api/proxy?url={quote(target, safe='')}&audio=aac"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Content-Type"), "video/MP2T")
+        self.assertEqual(response.data, converted)
+        transcode.assert_called_once_with(b"original-segment")
+
+    def test_audio_compatibility_mode_rejects_non_animesama_hosts(self):
+        with patch.object(api.requests, "get") as fetch:
+            response = api.app.test_client().get(
+                "/api/proxy?url=https%3A%2F%2Fexample.com%2Fsegment.ts&audio=aac"
+            )
+
+        self.assertEqual(response.status_code, 403)
+        fetch.assert_not_called()
+
+    def test_audio_compatibility_mode_rejects_unauthorized_redirect_hosts(self):
+        upstream = Mock()
+        upstream.status_code = 200
+        upstream.url = "https://example.com/segment.ts"
+        with patch.object(api.requests, "get", return_value=upstream):
+            response = api.app.test_client().get(
+                "/api/proxy?url=https%3A%2F%2Fprx-1476-ant.vmpx.online%2Fsegment.ts&audio=aac"
+            )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_audio_compatibility_mode_reports_transcoder_failure(self):
+        upstream = Mock()
+        upstream.status_code = 200
+        upstream.url = "https://prx-1476-ant.vmpx.online/hls/segment.ts"
+        upstream.headers = {"Content-Type": "video/MP2T"}
+        upstream.raw.headers.items.return_value = [("Content-Type", "video/MP2T")]
+        upstream.content = b"original-segment"
+        with (
+            patch.object(api.requests, "get", return_value=upstream),
+            patch.object(api, "_transcode_segment_audio_to_aac", return_value=None),
+        ):
+            response = api.app.test_client().get(
+                "/api/proxy?url=https%3A%2F%2Fprx-1476-ant.vmpx.online%2Fhls%2Fsegment.ts&audio=aac"
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.get_json(),
+            {"error": "La conversion audio du segment HLS a échoué."},
+        )
 
     def test_episode_list_route_returns_episode_data(self):
         episodes = [{"episode": 1, "title": "Episode 1"}]

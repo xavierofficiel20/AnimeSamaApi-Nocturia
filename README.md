@@ -339,7 +339,9 @@ http://127.0.0.1:5000/api/getAnimeLink?n=Spy%20x%20Family&s=saison1&v=vostfr
 
 Avec `e=1`, la réponse est un seul objet de même structure. `url`, `type` et `server` désignent l'option prioritaire; `streams` contient les lecteurs disponibles pour l'épisode. Les types directs sont `m3u8` ou `mp4`; les pages de lecteur sont `embed`.
 
-Le relais `/api/proxy` est utilisé pour les manifestes HLS et leurs segments lorsque le fournisseur refuse les requêtes directes du navigateur. Les en-têtes CORS sont ajoutés une seule fois par Flask-CORS; ne pas les dupliquer dans les réponses du relais, car les navigateurs rejettent plusieurs valeurs `Access-Control-Allow-Origin`.
+Le relais `/api/proxy` est utilisé pour les manifestes HLS et leurs segments lorsque le fournisseur refuse les requêtes directes du navigateur. Les en-têtes CORS sont ajoutés une seule fois par Flask-CORS; les en-têtes CORS de la réponse amont sont supprimés pour éviter les doublons, que les navigateurs rejettent.
+
+Pour les segments MPEG-TS AnimeSama hébergés sur VMPX, le paramètre optionnel `audio=aac` demande une conversion de la piste audio en AAC-LC (44,1 kHz, stéréo); la vidéo est copiée sans réencodage. Le binaire FFmpeg est fourni par `imageio-ffmpeg` dans `requirements.txt`. Cette conversion est faite par segment et augmente l'utilisation CPU de l'instance Render; les erreurs de conversion renvoient HTTP 502 plutôt que de retourner un faux flux converti.
 
 **Note** : L'extraction prend en charge les anciens liens intégrés dans `episodes.js` et les références `lien:<id>` émises dans les données de page récentes. Ces références sont résolues via `/api/lien.php` avec le jeton temporaire fourni dans la page.
 

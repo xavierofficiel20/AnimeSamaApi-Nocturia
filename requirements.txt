@@ -21,6 +21,7 @@ FlareSolverr==3.3.21rc4.post3
 Flask==3.1.2
 func_timeout==4.3.5
 idna==3.11
+imageio-ffmpeg==0.6.0
 importlib_metadata==8.7.0
 itsdangerous==2.2.0
 Jinja2==3.1.6
