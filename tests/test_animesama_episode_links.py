@@ -6,6 +6,7 @@ from src.utils import utils
 utils.Utils.findLink = lambda: "https://anime-sama.to"
 
 from src import backend
+from src import api
 
 
 class FakeResponse:
@@ -43,6 +44,47 @@ class FakeScraper:
 
 
 class AnimeSamaEpisodeLinksTests(unittest.TestCase):
+    def test_episode_list_route_returns_episode_data(self):
+        episodes = [{"episode": 1, "title": "Episode 1"}]
+        with patch.object(backend.Cardinal, "getAnimeEpisodes", return_value=episodes) as get_episodes:
+            response = api.app.test_client().get(
+                "/api/getAnimeEpisodes?n=Example&s=saison2&v=vf"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), episodes)
+        get_episodes.assert_called_once_with("Example", "saison2", "vf")
+
+    def test_episode_list_route_requires_an_anime_name(self):
+        response = api.app.test_client().get("/api/getAnimeEpisodes")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json(), {"error": "Paramètre 'n' manquant"})
+
+    def test_lists_episode_numbers_for_current_page_data(self):
+        for language in ("vostfr", "vf"):
+            with self.subTest(language=language):
+                scraper = FakeScraper(
+                    {
+                        "2433": "https://ansembed.net/embed/primary",
+                        "2432": "https://uqload.vc/embed/backup",
+                    }
+                )
+                season = {
+                    "base_url": "https://anime-sama.to/catalogue/example",
+                    "url": f"https://anime-sama.to/catalogue/example/saison1/{language}",
+                }
+                with (
+                    patch.object(backend.Cardinal, "getSpecificAnime", return_value=season),
+                    patch.object(backend.cloudscraper, "create_scraper", return_value=scraper),
+                ):
+                    result = backend.Cardinal.getAnimeEpisodes("Example", "saison1", language)
+
+                self.assertEqual(
+                    result,
+                    [{"episode": 1, "title": "Episode 1"}],
+                )
+
     def test_resolves_current_page_episode_references_for_each_language(self):
         for language in ("vostfr", "vf"):
             with self.subTest(language=language):
@@ -63,7 +105,27 @@ class AnimeSamaEpisodeLinksTests(unittest.TestCase):
                 ):
                     result = backend.Cardinal.getAnimeLink("Example", "saison1", language, "1")
 
-                self.assertEqual(result, {"episode": 1, "url": "https://ansembed.net/embed/primary"})
+                self.assertEqual(
+                    result,
+                    {
+                        "episode": 1,
+                        "url": "https://ansembed.net/embed/primary",
+                        "type": "embed",
+                        "server": "ansembed",
+                        "streams": [
+                            {
+                                "url": "https://ansembed.net/embed/primary",
+                                "type": "embed",
+                                "server": "ansembed",
+                            },
+                            {
+                                "url": "https://uqload.vc/embed/backup",
+                                "type": "embed",
+                                "server": "uqload",
+                            },
+                        ],
+                    },
+                )
                 self.assertEqual(
                     scraper.resolver_calls,
                     [

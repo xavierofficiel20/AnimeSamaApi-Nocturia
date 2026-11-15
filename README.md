@@ -317,20 +317,50 @@ http://127.0.0.1:5000/api/getAnimeLink?n=Spy%20x%20Family&s=saison1&v=vostfr
 [
   {
     "episode": 1,
-    "url": "https://..."
+    "url": "https://...",
+    "type": "embed",
+    "server": "ansembed",
+    "streams": [
+      {"url": "https://...", "type": "embed", "server": "ansembed"},
+      {"url": "https://...", "type": "m3u8", "server": "vidmoly"}
+    ]
   },
   {
     "episode": 2,
-    "url": "https://..."
+    "url": "https://...",
+    "type": "embed",
+    "server": "uqload",
+    "streams": [
+      {"url": "https://...", "type": "embed", "server": "uqload"}
+    ]
   }
 ]
 ```
 
-Avec `e=1`, la réponse est un seul objet, par exemple `{"episode": 1, "url": "https://..."}`.
+Avec `e=1`, la réponse est un seul objet de même structure. `url`, `type` et `server` désignent l'option prioritaire; `streams` contient les lecteurs disponibles pour l'épisode. Les types directs sont `m3u8` ou `mp4`; les pages de lecteur sont `embed`.
 
 **Note** : L'extraction prend en charge les anciens liens intégrés dans `episodes.js` et les références `lien:<id>` émises dans les données de page récentes. Ces références sont résolues via `/api/lien.php` avec le jeton temporaire fourni dans la page.
 
-### 8. Recuperation du lien actif de anime-sama
+### 8. Liste des épisodes d'une saison
+
+**GET** `/api/getAnimeEpisodes`
+
+Retourne les numéros d'épisodes réellement publiés pour une saison et une version. Cet endpoint ne résout pas les lecteurs vidéo et sert uniquement à construire la liste d'épisodes.
+
+**Paramètres** :
+- `n` (obligatoire) : Nom de l'anime
+- `s` (optionnel) : Saison (défaut : `saison1`)
+- `v` (optionnel) : Version (`vostfr` ou `vf`)
+
+**Réponse** :
+```json
+[
+  {"episode": 1, "title": "Episode 1"},
+  {"episode": 2, "title": "Episode 2"}
+]
+```
+
+### 9. Recuperation du lien actif de anime-sama
 
 **GET** `api/getAnimeSamaURL`
 

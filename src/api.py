@@ -87,6 +87,17 @@ def getSpecificAnime():
         return jsonify({})
     return jsonify(res)    
 
+@app.route('/api/getAnimeEpisodes', methods=["GET"])
+def getAnimeEpisodes():
+    nom = request.args.get("n", "").strip() or request.args.get("q", "").strip()
+    saison = request.args.get("s", "").strip()
+    version = request.args.get("v", "").strip()
+
+    if not nom:
+        return jsonify({"error": "Paramètre 'n' manquant"}), 400
+
+    return jsonify(Cardinal.getAnimeEpisodes(nom, saison, version))
+
 @app.route('/api/getAnimeLink', methods=["GET"])
 def getAnimeLink():
     nom = request.args.get("n", "").strip() or request.args.get("q", "").strip()
