@@ -1,5 +1,9 @@
 from flask import Flask, jsonify, request, Response
+from flask_cors import CORS
+import imageio_ffmpeg
 import requests
+import subprocess
+from urllib.parse import urlparse
 
 try:
     from .backend import *
@@ -12,6 +16,69 @@ except ImportError:
 # Initialisation propre de l'application Flask en dehors d'une classe pour éviter les erreurs de scope (@app.route)
 app = Flask(__name__)
 app.json.ensure_ascii = False
+CORS(app)
+
+def _is_supported_audio_transcode_target(url):
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return (
+        parsed.scheme == "https"
+        and (hostname == "vmpx.online" or hostname.endswith(".vmpx.online"))
+        and parsed.path.lower().endswith(".ts")
+    )
+
+
+def _transcode_segment_audio_to_aac(segment):
+    try:
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-fflags",
+                "+genpts",
+                "-i",
+                "pipe:0",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-profile:a",
+                "aac_low",
+                "-b:a",
+                "128k",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-mpegts_flags",
+                "+resend_headers",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ],
+            input=segment,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        app.logger.warning("AnimeSama HLS audio conversion failed: %s", error)
+        return None
+
+    if result.returncode != 0 or not result.stdout.startswith(b"\x47"):
+        detail = result.stderr.decode("utf-8", errors="replace")[-500:]
+        app.logger.warning("AnimeSama HLS audio conversion returned invalid output: %s", detail)
+        return None
+    return result.stdout
+
 
 @app.route('/', methods=["GET"])
 def home():
@@ -87,6 +154,17 @@ def getSpecificAnime():
         return jsonify({})
     return jsonify(res)    
 
+@app.route('/api/getAnimeEpisodes', methods=["GET"])
+def getAnimeEpisodes():
+    nom = request.args.get("n", "").strip() or request.args.get("q", "").strip()
+    saison = request.args.get("s", "").strip()
+    version = request.args.get("v", "").strip()
+
+    if not nom:
+        return jsonify({"error": "Paramètre 'n' manquant"}), 400
+
+    return jsonify(Cardinal.getAnimeEpisodes(nom, saison, version))
+
 @app.route('/api/getAnimeLink', methods=["GET"])
 def getAnimeLink():
     nom = request.args.get("n", "").strip() or request.args.get("q", "").strip()
@@ -102,8 +180,13 @@ def getAnimeLink():
 @app.route('/api/proxy', methods=["GET"])
 def proxy_hls():
     url = request.args.get('url', '').strip()
+    audio_mode = request.args.get("audio", "").strip().lower()
     if not url:
         return "URL manquante", 400
+    if audio_mode and audio_mode != "aac":
+        return jsonify({"error": "Mode de conversion audio invalide."}), 400
+    if audio_mode == "aac" and not _is_supported_audio_transcode_target(url):
+        return jsonify({"error": "Hôte ou segment non autorisé pour la conversion audio."}), 403
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -112,6 +195,8 @@ def proxy_hls():
     
     try:
         resp = requests.get(url, headers=headers, stream=True, timeout=10)
+        if audio_mode == "aac" and not _is_supported_audio_transcode_target(resp.url):
+            return jsonify({"error": "La redirection du segment vidéo n’est pas autorisée."}), 403
         
         if '.m3u8' in url:
             content = resp.content.decode('utf-8', errors='ignore')
@@ -123,7 +208,12 @@ def proxy_hls():
                 if line_str and not line_str.startswith('#'):
                     from urllib.parse import urljoin, quote
                     abs_segment_url = urljoin(base_url, line_str)
-                    proxy_segment_url = f"https://animesamaapi-nocturia-1.onrender.com/api/proxy?url={quote(abs_segment_url, safe='')}"
+                    proxy_segment_url = (
+                        "https://animesamaapi-nocturia-ufs2.onrender.com/api/proxy"
+                        f"?url={quote(abs_segment_url, safe='')}"
+                    )
+                    if urlparse(abs_segment_url).path.lower().endswith(".ts"):
+                        proxy_segment_url += "&audio=aac"
                     new_lines.append(proxy_segment_url)
                 else:
                     new_lines.append(line)
@@ -132,17 +222,34 @@ def proxy_hls():
             return Response(
                 new_content, 
                 status=resp.status_code, 
-                content_type='application/vnd.apple.mpegurl', 
-                headers={'Access-Control-Allow-Origin': '*'}
+                content_type='application/vnd.apple.mpegurl'
             )
 
-        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-        response_headers = [(name, value) for (name, value) in resp.raw.headers.items()
-                            if name.lower() not in excluded_headers]
-        
-        response_headers.append(('Access-Control-Allow-Origin', '*'))
-        response_headers.append(('Access-Control-Allow-Headers', '*'))
+        excluded_headers = {
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        }
+        response_headers = [
+            (name, value)
+            for name, value in resp.raw.headers.items()
+            if name.lower() not in excluded_headers
+            and not name.lower().startswith("access-control-")
+        ]
 
+        if audio_mode == "aac" and resp.status_code == 200:
+            converted_segment = _transcode_segment_audio_to_aac(resp.content)
+            if converted_segment is None:
+                return jsonify({"error": "La conversion audio du segment HLS a échoué."}), 502
+            response_headers = [
+                (name, value)
+                for name, value in response_headers
+                if name.lower() != "content-type"
+            ]
+            response_headers.append(("Content-Type", "video/MP2T"))
+            return Response(converted_segment, status=200, headers=response_headers)
+        
         return Response(resp.iter_content(chunk_size=1024), status=resp.status_code, headers=response_headers)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

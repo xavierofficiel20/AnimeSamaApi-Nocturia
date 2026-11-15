@@ -1,5 +1,5 @@
 import json, os, re, cloudscraper, requests, unicodedata
-from urllib.parse import urlparse, quote
+from urllib.parse import urljoin, urlparse, quote
 from concurrent.futures import ThreadPoolExecutor
 from rapidfuzz import process, fuzz
 from bs4 import BeautifulSoup
@@ -24,6 +24,39 @@ headers = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
 }
+
+
+def _get_episode_page_data(soup, link, scraper):
+    script_tag = soup.find("script", src=lambda source: source and "episodes.js" in source)
+    if script_tag:
+        js_link = script_tag.get("src", "")
+        js_text = scraper.get(
+            urljoin(link, js_link),
+            headers={**headers, "Referer": link},
+            timeout=15,
+        ).text
+    else:
+        data_script = soup.find("script", attrs={"data-source": "bdd"})
+        if not data_script:
+            return {}, None
+        js_text = data_script.string or data_script.get_text()
+
+    token_text = f"{soup}\n{js_text}"
+    token_match = re.search(
+        r"""(?:var|let|const)\s+epsJeton\s*=\s*['"]([^'"]+)['"]""",
+        token_text,
+    )
+    matches = re.findall(
+        r"(?:var|let|const)\s+(eps\w+)\s*=\s*\[(.*?)\];",
+        js_text,
+        re.DOTALL,
+    )
+    episode_lists = {
+        name: re.findall(r"""['"]((?:https?://|lien:)[^'"]+)['"]""", content)
+        for name, content in matches
+    }
+    return episode_lists, token_match.group(1) if token_match else None
+
 
 class Cardinal:
 
@@ -657,6 +690,35 @@ class Cardinal:
             return matched_copy
 
         return matched
+
+    def getAnimeEpisodes(nom, saison=None, version=None):
+        saison = saison or "saison1"
+        version = version or "vostfr"
+        anime = Cardinal.getSpecificAnime(nom, saison, version)
+        if not anime or not isinstance(anime, dict) or not anime.get("url"):
+            return []
+
+        link = anime["url"]
+        scraper = cloudscraper.create_scraper()
+        try:
+            response = scraper.get(
+                link,
+                headers={**headers, "Referer": anime.get("base_url", link)},
+                timeout=20,
+            )
+        except requests.RequestException as error:
+            print(f"AnimeSama episode list request failed ({type(error).__name__}).")
+            return []
+        if response.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        episode_lists, _ = _get_episode_page_data(soup, link, scraper)
+        episode_count = max((len(items) for items in episode_lists.values()), default=0)
+        return [
+            {"episode": number, "title": f"Episode {number}"}
+            for number in range(1, episode_count + 1)
+        ]
         
     def getAnimeLink(nom, saison=None, version=None, episode=None): # Recupère les différents liens disponibles ou un épisode spécifique
         
@@ -678,7 +740,11 @@ class Cardinal:
         link = f"{new_url}/{v_norm}"
 
         scraper = cloudscraper.create_scraper()
-        second = scraper.get(link)
+        second = scraper.get(
+            link,
+            headers={**headers, "Referer": base_url or link},
+            timeout=20,
+        )
         if second.status_code != 200:
             if url != link:
                 second = scraper.get(url)
@@ -690,30 +756,7 @@ class Cardinal:
                 return []
 
         soup = BeautifulSoup(second.text, 'html.parser')
-        
-        script_tag = soup.find("script", src=lambda s: s and "episodes.js" in s)
-        if not script_tag:
-            return []
-
-        src = script_tag.get("src", "")
-        js_link = src.split('"')[0].split("'")[0]
-
-        if js_link.startswith("http://") or js_link.startswith("https://"):
-            jsfile = js_link
-        elif js_link.startswith("/"):
-            parsed_link = urlparse(link)
-            jsfile = f"{parsed_link.scheme}://{parsed_link.netloc}{js_link}"
-        else:
-            jsfile = f"{link.rstrip('/')}/{js_link.lstrip('/')}"
-
-        js_text = scraper.get(jsfile, headers={**headers, "Referer": link}).text
-        # Supporte eps1, eps2... ainsi que epsAS ou autres variantes de lecteurs
-        matches = re.findall(r"var\s+(eps\w+)\s*=\s*\[(.*?)\];", js_text, re.DOTALL)
-
-        all_eps = {
-            name: re.findall(r'''['"](https?://[^'"]+)['"]''', content)
-            for name, content in matches
-        }
+        all_eps, episode_token = _get_episode_page_data(soup, link, scraper)
 
         if not all_eps:
             return []
@@ -746,6 +789,7 @@ class Cardinal:
             session = requests.Session()
             fallback_url = None
             best_candidate = None
+            stream_options = []
 
             for lecteur in valid_lecteurs:
                 eps_list = all_eps.get(lecteur, [])
@@ -753,13 +797,55 @@ class Cardinal:
                     continue
 
                 url_to_test = eps_list[ep_idx].strip(" \t\n\r\xa0")
-                if not url_to_test or "sibnet.ru" in url_to_test.lower():
-                    if url_to_test and not fallback_url:
-                        fallback_url = url_to_test
+                if url_to_test.startswith("lien:"):
+                    if not episode_token:
+                        continue
+                    try:
+                        link_response = scraper.get(
+                            urljoin(link, "/api/lien.php"),
+                            params={"j": episode_token, "l": url_to_test[5:]},
+                            headers={
+                                **headers,
+                                "Accept": "application/json",
+                                "Referer": link,
+                            },
+                            timeout=15,
+                        )
+                        link_response.raise_for_status()
+                        link_data = link_response.json()
+                    except (requests.RequestException, ValueError) as error:
+                        print(
+                            f"AnimeSama link resolver failed for episode {ep_idx + 1} "
+                            f"({type(error).__name__})."
+                        )
+                        continue
+
+                    resolved_reference = link_data.get("u") if isinstance(link_data, dict) else None
+                    if not isinstance(resolved_reference, str) or not resolved_reference.strip():
+                        continue
+                    url_to_test = urljoin(link, resolved_reference.strip())
+                    if urlparse(url_to_test).scheme not in ("http", "https"):
+                        continue
+
+                if not url_to_test:
                     continue
 
+                player_host = urlparse(url_to_test).hostname or lecteur
+                player_name = player_host.removeprefix("www.").split(".")[0]
                 if not fallback_url:
                     fallback_url = url_to_test
+
+                def add_option(stream_url, stream_type, server):
+                    if not any(option["url"] == stream_url for option in stream_options):
+                        stream_options.append({
+                            "url": stream_url,
+                            "type": stream_type,
+                            "server": server,
+                        })
+
+                if "sibnet.ru" in url_to_test.lower():
+                    add_option(url_to_test, "embed", player_name)
+                    continue
 
                 try:
                     resolved = resolve_video_url(url_to_test, session=session)
@@ -774,28 +860,36 @@ class Cardinal:
                         
                         # 0 = stream vérifié actif et sain
                         if error_score == 0:
-                            return {
-                                "episode": ep_idx + 1,
-                                "url": resolved_url
-                            }
+                            add_option(resolved_url, resolved.get("type"), player_name)
+                            continue
                         
                         # Flux potentiellement valide mais lent à répondre (timeout/connexion lente)
                         elif is_healthy and error_score < 999:
                             if not best_candidate:
-                                best_candidate = resolved_url
+                                best_candidate = {
+                                    "url": resolved_url,
+                                    "type": resolved.get("type"),
+                                    "server": player_name,
+                                }
+                            continue
+
+                add_option(url_to_test, "embed", player_name)
 
             # Si aucun lecteur n'a pu être validé instantanément, utiliser le meilleur candidat
-            if best_candidate:
-                return {
-                    "episode": ep_idx + 1,
-                    "url": best_candidate
-                }
+            if best_candidate and not any(option["type"] in ("m3u8", "mp4") for option in stream_options):
+                stream_options.insert(0, best_candidate)
 
             # En dernier recours pour ne jamais rejeter l'épisode, retourner l'embed
-            if fallback_url:
+            if not stream_options and fallback_url:
+                add_option(fallback_url, "embed", urlparse(fallback_url).hostname or "Lecteur")
+
+            if stream_options:
                 return {
                     "episode": ep_idx + 1,
-                    "url": fallback_url
+                    "url": stream_options[0]["url"],
+                    "type": stream_options[0]["type"],
+                    "server": stream_options[0]["server"],
+                    "streams": stream_options,
                 }
             return None
 

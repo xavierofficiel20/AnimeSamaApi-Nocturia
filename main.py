@@ -1,5 +1,4 @@
 import os
-from flask_cors import CORS
 
 try:
     from .src.api import app
@@ -27,9 +26,6 @@ class Api:
             Config.PORT = port
         except Exception:
             pass
-
-        # Activation du CORS sur l'application Flask
-        CORS(app)
 
         # Utilisation de l'instance Flask importée
         app.run(
