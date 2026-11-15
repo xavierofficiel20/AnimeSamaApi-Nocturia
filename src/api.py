@@ -208,7 +208,12 @@ def proxy_hls():
                 if line_str and not line_str.startswith('#'):
                     from urllib.parse import urljoin, quote
                     abs_segment_url = urljoin(base_url, line_str)
-                    proxy_segment_url = f"https://animesamaapi-nocturia-1.onrender.com/api/proxy?url={quote(abs_segment_url, safe='')}"
+                    proxy_segment_url = (
+                        "https://animesamaapi-nocturia-ufs2.onrender.com/api/proxy"
+                        f"?url={quote(abs_segment_url, safe='')}"
+                    )
+                    if urlparse(abs_segment_url).path.lower().endswith(".ts"):
+                        proxy_segment_url += "&audio=aac"
                     new_lines.append(proxy_segment_url)
                 else:
                     new_lines.append(line)

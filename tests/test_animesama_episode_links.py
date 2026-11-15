@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from src.utils import utils
 
@@ -84,6 +84,35 @@ class AnimeSamaEpisodeLinksTests(unittest.TestCase):
         self.assertEqual(response.headers.get("Content-Type"), "video/MP2T")
         self.assertEqual(response.data, converted)
         transcode.assert_called_once_with(b"original-segment")
+
+    def test_hls_playlist_routes_transport_stream_segments_through_aac_conversion(self):
+        upstream = Mock()
+        upstream.status_code = 200
+        upstream.content = (
+            b"#EXTM3U\n"
+            b"#EXTINF:10,\n"
+            b"segment.ts?token=temporary\n"
+            b"#EXT-X-ENDLIST\n"
+        )
+        playlist_url = "https://prx-1476-ant.vmpx.online/hls/index.m3u8"
+        with patch.object(api.requests, "get", return_value=upstream):
+            response = api.app.test_client().get(
+                f"/api/proxy?url={quote(playlist_url, safe='')}"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        manifest = response.get_data(as_text=True)
+        segment_url = next(line for line in manifest.splitlines() if line.startswith("https://"))
+        parsed_segment_url = urlparse(segment_url)
+        self.assertEqual(
+            parsed_segment_url.netloc,
+            "animesamaapi-nocturia-ufs2.onrender.com",
+        )
+        self.assertEqual(parsed_segment_url.path, "/api/proxy")
+        self.assertEqual(
+            parse_qs(parsed_segment_url.query)["audio"],
+            ["aac"],
+        )
 
     def test_audio_compatibility_mode_rejects_non_animesama_hosts(self):
         with patch.object(api.requests, "get") as fetch:
